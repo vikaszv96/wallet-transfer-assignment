@@ -1,0 +1,211 @@
+//go:build integration
+
+// Package integration exercises the real Postgres-backed stack: actual row
+// locking, actual constraints, actual concurrent transactions. Run with
+// `make test-integration` (requires `make db-up` / docker compose).
+package integration
+
+import (
+	"context"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
+	"github.com/robustrade/wallet-transfer-assignment/internal/db"
+	"github.com/robustrade/wallet-transfer-assignment/internal/domain"
+	"github.com/robustrade/wallet-transfer-assignment/internal/repository/postgres"
+	"github.com/robustrade/wallet-transfer-assignment/internal/service"
+)
+
+func setup(t *testing.T) (*service.TransferService, *service.WalletService) {
+	t.Helper()
+	dsn := os.Getenv("INTEGRATION_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("INTEGRATION_DATABASE_URL not set, skipping integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := db.Connect(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	require.NoError(t, db.Migrate(ctx, pool))
+
+	walletRepo := postgres.NewWalletRepository(pool)
+	transferRepo := postgres.NewTransferRepository(pool)
+	ledgerRepo := postgres.NewLedgerRepository(pool)
+	idemRepo := postgres.NewIdempotencyRepository(pool)
+	tx := postgres.NewTxManager(pool)
+
+	transferSvc := service.NewTransferService(tx, walletRepo, transferRepo, ledgerRepo, idemRepo)
+	walletSvc := service.NewWalletService(walletRepo, ledgerRepo)
+	return transferSvc, walletSvc
+}
+
+func uniqueID(prefix string) string {
+	return prefix + "_" + uuid.NewString()[:8]
+}
+
+func TestIntegration_TransferEndToEnd(t *testing.T) {
+	transferSvc, walletSvc := setup(t)
+	ctx := context.Background()
+
+	from := uniqueID("wallet")
+	to := uniqueID("wallet")
+	_, err := walletSvc.CreateWallet(ctx, from, 1000, "USD")
+	require.NoError(t, err)
+	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	require.NoError(t, err)
+
+	result, err := transferSvc.CreateTransfer(ctx, service.CreateTransferInput{
+		IdempotencyKey: uniqueID("idem"), FromWalletID: from, ToWalletID: to, Amount: 250,
+	})
+	require.NoError(t, err)
+	require.Equal(t, domain.TransferProcessed, result.Status)
+
+	fromWallet, err := walletSvc.GetWallet(ctx, from)
+	require.NoError(t, err)
+	toWallet, err := walletSvc.GetWallet(ctx, to)
+	require.NoError(t, err)
+	require.EqualValues(t, 750, fromWallet.Balance)
+	require.EqualValues(t, 250, toWallet.Balance)
+
+	entries, err := walletSvc.ListLedger(ctx, from)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, domain.EntryDebit, entries[0].EntryType)
+}
+
+func TestIntegration_ReplayReturnsSameTransfer(t *testing.T) {
+	transferSvc, walletSvc := setup(t)
+	ctx := context.Background()
+
+	from := uniqueID("wallet")
+	to := uniqueID("wallet")
+	_, err := walletSvc.CreateWallet(ctx, from, 500, "USD")
+	require.NoError(t, err)
+	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	require.NoError(t, err)
+
+	in := service.CreateTransferInput{IdempotencyKey: uniqueID("idem"), FromWalletID: from, ToWalletID: to, Amount: 100}
+
+	first, err := transferSvc.CreateTransfer(ctx, in)
+	require.NoError(t, err)
+
+	second, err := transferSvc.CreateTransfer(ctx, in)
+	require.NoError(t, err)
+	require.True(t, second.Replayed)
+	require.Equal(t, first.TransferID, second.TransferID)
+
+	fromWallet, err := walletSvc.GetWallet(ctx, from)
+	require.NoError(t, err)
+	require.EqualValues(t, 400, fromWallet.Balance, "replay must not move money twice, even across process/DB round trips")
+}
+
+// TestIntegration_ConcurrentDuplicateIdempotencyKey fires the same
+// idempotency key from many real goroutines, each with its own DB
+// transaction, at once. This is the scenario a naive "check then insert"
+// idempotency implementation gets wrong under real concurrency.
+func TestIntegration_ConcurrentDuplicateIdempotencyKey(t *testing.T) {
+	transferSvc, walletSvc := setup(t)
+	ctx := context.Background()
+
+	from := uniqueID("wallet")
+	to := uniqueID("wallet")
+	_, err := walletSvc.CreateWallet(ctx, from, 1000, "USD")
+	require.NoError(t, err)
+	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	require.NoError(t, err)
+
+	key := uniqueID("idem")
+	const n = 10
+	var wg sync.WaitGroup
+	results := make([]*service.TransferResult, n)
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = transferSvc.CreateTransfer(ctx, service.CreateTransferInput{
+				IdempotencyKey: key, FromWalletID: from, ToWalletID: to, Amount: 100,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			require.ErrorIs(t, errs[i], domain.ErrRequestInProgress)
+		}
+	}
+
+	fromWallet, err := walletSvc.GetWallet(ctx, from)
+	require.NoError(t, err)
+	require.EqualValues(t, 900, fromWallet.Balance, "duplicate concurrent requests with the same key must move money exactly once")
+}
+
+// TestIntegration_ConcurrentTransfersNoDoubleSpend fires more concurrent
+// transfer demand at a single source wallet than it can afford, each with a
+// distinct idempotency key and destination. Without correct row-level
+// locking this either double-spends (balance goes negative / more transfers
+// succeed than the balance allows) or loses updates (balance ends up wrong).
+// With SELECT ... FOR UPDATE, exactly floor(balance/amount) succeed.
+func TestIntegration_ConcurrentTransfersNoDoubleSpend(t *testing.T) {
+	transferSvc, walletSvc := setup(t)
+	ctx := context.Background()
+
+	source := uniqueID("wallet")
+	_, err := walletSvc.CreateWallet(ctx, source, 1000, "USD")
+	require.NoError(t, err)
+
+	const n = 15
+	const amount = 100 // demand = 1500 against a balance of 1000
+
+	destinations := make([]string, n)
+	for i := range destinations {
+		destinations[i] = uniqueID("wallet")
+		_, err := walletSvc.CreateWallet(ctx, destinations[i], 0, "USD")
+		require.NoError(t, err)
+	}
+
+	var wg sync.WaitGroup
+	results := make([]*service.TransferResult, n)
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = transferSvc.CreateTransfer(ctx, service.CreateTransferInput{
+				IdempotencyKey: uniqueID("idem"),
+				FromWalletID:   source,
+				ToWalletID:     destinations[i],
+				Amount:         amount,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	processed := 0
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i])
+		if results[i].Status == domain.TransferProcessed {
+			processed++
+		} else {
+			require.Equal(t, domain.TransferFailed, results[i].Status)
+		}
+	}
+
+	sourceWallet, err := walletSvc.GetWallet(ctx, source)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, sourceWallet.Balance, int64(0), "balance must never go negative")
+	require.EqualValues(t, 1000-int64(processed*amount), sourceWallet.Balance)
+	require.Equal(t, 10, processed, "exactly floor(balance/amount) transfers should succeed under contention")
+}

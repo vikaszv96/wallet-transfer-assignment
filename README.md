@@ -33,3 +33,60 @@ This repository is a reusable coding assignment template for evaluating backend 
 3. **Raise a Pull Request** back to this repository (`main` branch) with your full solution.
 
 Your PR branch should be named: `solution/<your-name>` (e.g., `solution/jane-doe`).
+
+---
+
+## Solution
+
+Implemented with **Go + Gin**. See [`DESIGN.md`](./DESIGN.md) for the full
+design note (schema, idempotency strategy, concurrency strategy, failure
+modes) written before implementation, per the assignment's documentation
+-first workflow.
+
+### Layout
+
+```
+cmd/server/            entrypoint, dependency wiring
+internal/domain/        entities, state machine, sentinel errors
+internal/repository/    persistence ports (interfaces) + postgres/ implementation
+internal/service/       business logic: idempotency, locking, ledger, transfer workflow
+internal/handler/       Gin handlers, request/response DTOs, error mapping
+internal/router/        route registration + request logging middleware
+internal/db/            connection + embedded SQL migrations
+internal/config/        env-based configuration
+test/                   Postgres-backed integration + concurrency tests
+```
+
+### Run it
+
+```bash
+cp .env.example .env
+make run          # starts Postgres via docker compose, then the API on :8080
+```
+
+Demo wallets `wallet_1` (500.00), `wallet_2` (200.00), `wallet_3` (0.00) are
+seeded automatically by migration `0002_seed_demo_wallets`.
+
+```bash
+curl -s -X POST localhost:8080/transfers \
+  -H 'Content-Type: application/json' \
+  -d '{"idempotencyKey":"abc123","fromWalletId":"wallet_1","toWalletId":"wallet_2","amount":100}'
+```
+
+### Test it
+
+```bash
+make test-unit          # service-layer tests against in-memory fakes, no DB needed
+make test-integration    # real Postgres: constraints, row locking, concurrency
+```
+
+### API
+
+| Method | Path                  | Purpose                                   |
+|--------|-----------------------|--------------------------------------------|
+| POST   | `/transfers`           | create a transfer (idempotent)             |
+| GET    | `/transfers/:id`       | fetch a transfer                           |
+| POST   | `/wallets`              | create a wallet (not in the spec; needed to seed/test the system) |
+| GET    | `/wallets/:id`          | wallet balance                             |
+| GET    | `/wallets/:id/ledger`   | ledger entries for a wallet (transfer history) |
+| GET    | `/healthz`              | liveness                                   |

@@ -1,7 +1,3 @@
-Yes. If you want the disclosure to accurately reflect **AI as an assistive tool rather than the primary author**, I’d change it so it clearly says roughly **40% AI assistance / 60% human implementation, debugging, decisions, and verification**.
-
-I would also avoid claiming the AI wrote the entire design/implementation, because that contradicts the “minimal AI usage” framing.
-
 # AI Usage Disclosure
 
 ## 1. Tool

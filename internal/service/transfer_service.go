@@ -111,6 +111,10 @@ func (s *TransferService) execute(ctx context.Context, in CreateTransferInput) (
 		}
 		from, to := resolveFromTo(first, second, in.FromWalletID)
 
+		if from.Currency != to.Currency {
+			return domain.ErrCurrencyMismatch
+		}
+
 		transfer := domain.NewPendingTransfer(s.newID(), in.IdempotencyKey, in.FromWalletID, in.ToWalletID, in.Amount)
 		if err := s.transfers.Create(ctx, transfer); err != nil {
 			return fmt.Errorf("create transfer: %w", err)

@@ -159,6 +159,25 @@ func TestCreateTransfer_WalletNotFoundReleasesKeyForRetry(t *testing.T) {
 	assert.Equal(t, domain.TransferProcessed, result.Status)
 }
 
+func TestCreateTransfer_CurrencyMismatchRejected(t *testing.T) {
+	ctx := context.Background()
+	svc, wallets, _, ledger, _ := newTestService(
+		&domain.Wallet{ID: "wallet_usd", Balance: 500, Currency: "USD"},
+		&domain.Wallet{ID: "wallet_eur", Balance: 200, Currency: "EUR"},
+	)
+
+	_, err := svc.CreateTransfer(ctx, CreateTransferInput{
+		IdempotencyKey: "cross-currency", FromWalletID: "wallet_usd", ToWalletID: "wallet_eur", Amount: 100,
+	})
+	assert.ErrorIs(t, err, domain.ErrCurrencyMismatch)
+
+	from, _ := wallets.Get(ctx, "wallet_usd")
+	assert.EqualValues(t, 500, from.Balance, "a rejected cross-currency transfer must not move money")
+
+	entries, _ := ledger.ListByWallet(ctx, "wallet_usd")
+	assert.Empty(t, entries)
+}
+
 func TestCreateTransfer_ValidationErrors(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, _, _ := newTestService(

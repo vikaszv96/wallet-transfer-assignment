@@ -34,6 +34,7 @@ Responses:
 | Same key, different payload             | 409  | `idempotency key reused with a different payload` |
 | Insufficient funds                      | 422  | transfer resource, `status=FAILED`      |
 | Wallet not found                        | 404  | error                                   |
+| Currency mismatch between wallets       | 400  | error                                   |
 | Validation error (bad amount, same wallet on both sides, missing key) | 400 | error |
 
 ### Supporting endpoints (optional enhancements, included for testability)
@@ -172,10 +173,11 @@ enforced in the domain layer.
 |---|---|
 | Duplicate request (same key, network retry) | Replayed from `idempotency_records`, no duplicate side effects |
 | Same key, concurrent in-flight duplicate | `409`, second caller retries |
-| Crash after claiming idempotency key, before finishing | Lease expiry + reclaim on next attempt |
+| Crash after claiming idempotency key, before finishing | Key stays `PENDING`; `409` on any retry until manually resolved — see §4's note on why auto-reclaim was deliberately not implemented |
 | Concurrent transfers on same wallet | Row-level locks in deterministic order |
 | Insufficient balance | Transfer recorded as `FAILED`, no ledger rows, balances untouched |
-| Wallet does not exist | `404`, nothing written |
+| Wallet does not exist | `404`, nothing written, idempotency key released for retry |
+| Currency mismatch between wallets | `400`, nothing written, idempotency key released for retry |
 | Partial failure mid-transaction (e.g. DB error after debit) | Whole DB transaction rolls back — nothing partially applied |
 
 ## 8. Testing Strategy
@@ -196,10 +198,9 @@ budget and are listed as optional enhancements in `ASSIGNMENT.md`.
 
 ## 10. Assumptions / Tradeoffs
 
-- Single currency semantics kept simple (`currency` column exists but no
-  cross-currency conversion logic).
+- No cross-currency conversion: a transfer requires `from.Currency ==
+  to.Currency`, rejected with `ErrCurrencyMismatch` (400) otherwise. Real
+  multi-currency support would need an FX-rate service and is out of scope.
 - No auth/authz layer — out of scope for this assignment.
 - Wallet creation endpoint added even though not in the spec, purely so the
   system is runnable/testable end to end.
-- Idempotency lease is 15s — reasonable for a synchronous HTTP call; would be
-  tuned against real p99 latency in production.

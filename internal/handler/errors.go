@@ -20,7 +20,7 @@ func mapError(err error) (int, string) {
 		return http.StatusNotFound, err.Error()
 	case errors.Is(err, domain.ErrWalletAlreadyExists):
 		return http.StatusConflict, err.Error()
-	case errors.Is(err, domain.ErrSameWallet), errors.Is(err, domain.ErrInvalidAmount):
+	case errors.Is(err, domain.ErrSameWallet), errors.Is(err, domain.ErrInvalidAmount), errors.Is(err, domain.ErrCurrencyMismatch):
 		return http.StatusBadRequest, err.Error()
 	case errors.Is(err, domain.ErrIdempotencyKeyReused), errors.Is(err, domain.ErrRequestInProgress):
 		return http.StatusConflict, err.Error()

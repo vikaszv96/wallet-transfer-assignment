@@ -7,6 +7,7 @@ var (
 	ErrWalletAlreadyExists       = errors.New("wallet already exists")
 	ErrInsufficientFunds         = errors.New("insufficient funds")
 	ErrSameWallet                = errors.New("source and destination wallet must differ")
+	ErrCurrencyMismatch          = errors.New("source and destination wallet currencies must match")
 	ErrInvalidAmount             = errors.New("amount must be positive")
 	ErrIdempotencyKeyReused      = errors.New("idempotency key reused with a different payload")
 	ErrRequestInProgress         = errors.New("request with this idempotency key is already in progress")

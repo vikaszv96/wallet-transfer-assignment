@@ -30,6 +30,7 @@ func (h *TransferHandler) Create(c *gin.Context) {
 		ToWalletID:     req.ToWalletID,
 		Amount:         req.Amount,
 	})
+
 	if err != nil {
 		writeError(c, err)
 		return

@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -247,4 +248,88 @@ func TestIntegration_ConcurrentMigrationsAreSafe(t *testing.T) {
 	for i, err := range errs {
 		require.NoError(t, err, "concurrent Migrate() call %d should not fail", i)
 	}
+}
+
+// TestIntegration_RollbackSurvivesCancelledContext proves that a failed
+// transaction still rolls back cleanly -- with no side effect on the
+// reported error -- even when the caller's context is already cancelled by
+// the time WithinTx tries to clean up (e.g. an HTTP client disconnecting
+// mid-request). cancel() is called synchronously inside fn, right before it
+// returns its error, so the original ctx is guaranteed to be dead by the
+// time WithinTx's rollback path runs -- no timing race.
+//
+// Note on what this does and doesn't prove: pgxpool discards a connection
+// outright rather than pooling it after a failed operation, and Postgres
+// itself rolls back any open transaction when the underlying connection
+// closes -- so using the cancelled ctx for Rollback does not actually leak a
+// permanently-open "idle in transaction" session (verified manually against
+// pg_stat_activity while developing this fix). The concrete, demonstrable
+// bug is narrower but still real: Rollback(ctx) fails fast on an already
+// -cancelled ctx, and that failure gets wrapped onto the real error as a
+// misleading "(rollback also failed: context canceled)" suffix -- which
+// pollutes error logs with a rollback "failure" that was never actually
+// about the rollback, and burns a connection (forcing a reconnect) for no
+// reason beyond having used the wrong context.
+func TestIntegration_RollbackSurvivesCancelledContext(t *testing.T) {
+	dsn := os.Getenv("INTEGRATION_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("INTEGRATION_DATABASE_URL not set, skipping integration test")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer setupCancel()
+
+	pool, err := db.Connect(setupCtx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	txManager := postgres.NewTxManager(pool)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sentinelErr := errors.New("boom")
+
+	runErr := txManager.WithinTx(ctx, func(txCtx context.Context) error {
+		cancel() // cancel the ORIGINAL ctx deterministically, before returning
+		return sentinelErr
+	})
+
+	require.ErrorIs(t, runErr, sentinelErr)
+	require.Equal(t, sentinelErr.Error(), runErr.Error(),
+		"the original error must propagate byte-for-byte -- not get a misleading "+
+			"'(rollback also failed: ...)' suffix appended just because rollback used an "+
+			"already-cancelled context instead of its own")
+}
+
+// TestIntegration_IdempotencyRecordCompletedRequiresTransferID proves the
+// schema itself refuses an inconsistent state: a COMPLETED idempotency
+// record with no linked transfer. The application code never does this
+// today, but nothing in Go stops a future change from doing it by mistake --
+// the CHECK constraint is the backstop.
+func TestIntegration_IdempotencyRecordCompletedRequiresTransferID(t *testing.T) {
+	dsn := os.Getenv("INTEGRATION_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("INTEGRATION_DATABASE_URL not set, skipping integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := db.Connect(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	require.NoError(t, db.Migrate(ctx, pool))
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO idempotency_records (idempotency_key, request_hash, status)
+		VALUES ($1, 'somehash', 'COMPLETED')
+	`, uniqueID("idem"))
+	require.Error(t, err, "COMPLETED with a NULL transfer_id must be rejected by the check constraint")
+
+	// A PENDING record with no transfer_id yet -- the normal, expected state
+	// right after Claim -- must still be allowed.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO idempotency_records (idempotency_key, request_hash, status)
+		VALUES ($1, 'somehash', 'PENDING')
+	`, uniqueID("idem"))
+	require.NoError(t, err, "PENDING with no transfer_id yet must still be allowed")
 }

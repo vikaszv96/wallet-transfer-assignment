@@ -44,5 +44,12 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
     status          VARCHAR(16) NOT NULL CHECK (status IN ('PENDING', 'COMPLETED')),
     transfer_id     UUID REFERENCES transfers (id),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- A COMPLETED record must be linked to the transfer it completed with --
+    -- replay depends on that link (it re-fetches transfer_id, see comment
+    -- above). Without this, a future code path that ever updates status
+    -- without also setting transfer_id would durably corrupt a key: it
+    -- would look "done" but have nothing valid to replay.
+    CONSTRAINT chk_idempotency_completed_has_transfer
+        CHECK (status <> 'COMPLETED' OR transfer_id IS NOT NULL)
 );

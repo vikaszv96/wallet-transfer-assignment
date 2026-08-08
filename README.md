@@ -64,8 +64,11 @@ cp .env.example .env
 make run          # starts Postgres via docker compose, then the API on :8080
 ```
 
-Demo wallets `wallet_1` (500.00), `wallet_2` (200.00), `wallet_3` (0.00) are
-seeded automatically by migration `0002_seed_demo_wallets`.
+Demo wallets `wallet_1` (balance `50000`), `wallet_2` (balance `20000`),
+`wallet_3` (balance `0`) are seeded automatically by migration
+`0002_seed_demo_wallets`. Balances are integers in the wallet's smallest
+currency unit (e.g. cents), same as every `amount` in the API -- so
+`wallet_1`'s `50000` is $500.00, not $50,000.00.
 
 ```bash
 curl -s -X POST localhost:8080/transfers \

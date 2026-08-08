@@ -36,14 +36,24 @@ func (h *TransferHandler) Create(c *gin.Context) {
 		return
 	}
 
-	status := http.StatusCreated
+	c.JSON(transferStatusCode(result), toTransferResponse(result))
+}
+
+// transferStatusCode picks the HTTP status for a CreateTransfer result.
+// FAILED must win regardless of Replayed: an idempotent replay has to return
+// the same status the original attempt did, so a replayed FAILED transfer is
+// still 422, not 200 -- otherwise retrying the exact same request changes
+// its apparent outcome, which breaks idempotent HTTP semantics. A successful
+// replay (nothing new created) is 200; a freshly processed transfer is 201.
+func transferStatusCode(result *service.TransferResult) int {
 	switch {
-	case result.Replayed:
-		status = http.StatusOK
 	case result.Status == domain.TransferFailed:
-		status = http.StatusUnprocessableEntity
+		return http.StatusUnprocessableEntity
+	case result.Replayed:
+		return http.StatusOK
+	default:
+		return http.StatusCreated
 	}
-	c.JSON(status, toTransferResponse(result))
 }
 
 func (h *TransferHandler) Get(c *gin.Context) {

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -42,7 +43,16 @@ func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) e
 	txCtx := withTx(ctx, tx)
 
 	if err := fn(txCtx); err != nil {
-		if rbErr := tx.Rollback(ctx); rbErr != nil && rbErr != pgx.ErrTxClosed {
+		// Deliberately not using ctx here: if the caller's context is what
+		// caused fn to fail (cancelled/timed out), it may already be done,
+		// and Rollback(ctx) would fail immediately without ever telling
+		// Postgres to roll back -- leaving the transaction open on this
+		// connection until the pool eventually notices. Cleanup must still
+		// run even when the original context is dead, so it gets its own
+		// short-lived, always-valid context instead.
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if rbErr := tx.Rollback(rbCtx); rbErr != nil && rbErr != pgx.ErrTxClosed {
 			return fmt.Errorf("%w (rollback also failed: %v)", err, rbErr)
 		}
 		return err

@@ -78,9 +78,13 @@ in memory).
 
 Flow:
 
-1. Hash the request body (`sha256(fromWalletId|toWalletId|amount)`) — this
-   catches a client reusing the same key for a *different* request, which is
-   a bug on the caller's side, not a legitimate retry.
+1. Hash the request body — `sha256` of a JSON-encoded `{from, to, amount}`
+   struct, not a delimiter-joined string. Wallet IDs are unconstrained, so a
+   plain `fromWalletId|toWalletId|amount` join is ambiguous: `("a|b","c",100)`
+   and `("a","b|c",100)` both produce `"a|b|c|100"`. JSON's string escaping
+   makes field boundaries unambiguous regardless of what a wallet ID
+   contains. This catches a client reusing the same key for a *different*
+   request, which is a bug on the caller's side, not a legitimate retry.
 2. `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`. If the insert lands,
    this request owns the key and proceeds to execute the transfer.
 3. If the insert conflicts, an idempotency record already exists:

@@ -54,7 +54,7 @@ transfers          (id PK, idempotency_key, from_wallet_id FK, to_wallet_id FK,
                      amount, status, failure_reason, timestamps)
 ledger_entries     (id PK, transfer_id FK, wallet_id FK, entry_type, amount, created_at)
 idempotency_records(idempotency_key PK, request_hash, status, transfer_id FK,
-                     response_code, response_body, timestamps)
+                     timestamps)
 ```
 
 Key constraints:

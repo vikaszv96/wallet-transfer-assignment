@@ -209,3 +209,42 @@ func TestIntegration_ConcurrentTransfersNoDoubleSpend(t *testing.T) {
 	require.EqualValues(t, 1000-int64(processed*amount), sourceWallet.Balance)
 	require.Equal(t, 10, processed, "exactly floor(balance/amount) transfers should succeed under contention")
 }
+
+// TestIntegration_ConcurrentMigrationsAreSafe reproduces the scenario several
+// replicas of this service starting at the same time would hit: multiple
+// processes calling db.Migrate against the same database concurrently. A
+// naive "check schema_migrations, then INSERT" is unsafe here -- two
+// processes can both see a migration as unapplied before either commits, and
+// the loser's INSERT fails on the primary key, crashing startup even though
+// the migration itself is idempotent. Migrate serializes this with a
+// Postgres advisory lock, so every concurrent caller should succeed.
+func TestIntegration_ConcurrentMigrationsAreSafe(t *testing.T) {
+	dsn := os.Getenv("INTEGRATION_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("INTEGRATION_DATABASE_URL not set, skipping integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool, err := db.Connect(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = db.Migrate(ctx, pool)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "concurrent Migrate() call %d should not fail", i)
+	}
+}

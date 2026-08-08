@@ -23,7 +23,11 @@ func (h *WalletHandler) Create(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.CreateWallet(c.Request.Context(), req.ID, req.Balance, req.Currency)
+	result, err := h.service.CreateWallet(c.Request.Context(), service.CreateWalletInput{
+		ID:       req.ID,
+		Balance:  req.Balance,
+		Currency: req.Currency,
+	})
 	if err != nil {
 		writeError(c, err)
 		return

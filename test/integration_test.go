@@ -58,9 +58,9 @@ func TestIntegration_TransferEndToEnd(t *testing.T) {
 
 	from := uniqueID("wallet")
 	to := uniqueID("wallet")
-	_, err := walletSvc.CreateWallet(ctx, from, 1000, "USD")
+	_, err := walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: from, Balance: 1000, Currency: "USD"})
 	require.NoError(t, err)
-	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	_, err = walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: to, Balance: 0, Currency: "USD"})
 	require.NoError(t, err)
 
 	result, err := transferSvc.CreateTransfer(ctx, service.CreateTransferInput{
@@ -88,9 +88,9 @@ func TestIntegration_ReplayReturnsSameTransfer(t *testing.T) {
 
 	from := uniqueID("wallet")
 	to := uniqueID("wallet")
-	_, err := walletSvc.CreateWallet(ctx, from, 500, "USD")
+	_, err := walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: from, Balance: 500, Currency: "USD"})
 	require.NoError(t, err)
-	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	_, err = walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: to, Balance: 0, Currency: "USD"})
 	require.NoError(t, err)
 
 	in := service.CreateTransferInput{IdempotencyKey: uniqueID("idem"), FromWalletID: from, ToWalletID: to, Amount: 100}
@@ -118,9 +118,9 @@ func TestIntegration_ConcurrentDuplicateIdempotencyKey(t *testing.T) {
 
 	from := uniqueID("wallet")
 	to := uniqueID("wallet")
-	_, err := walletSvc.CreateWallet(ctx, from, 1000, "USD")
+	_, err := walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: from, Balance: 1000, Currency: "USD"})
 	require.NoError(t, err)
-	_, err = walletSvc.CreateWallet(ctx, to, 0, "USD")
+	_, err = walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: to, Balance: 0, Currency: "USD"})
 	require.NoError(t, err)
 
 	key := uniqueID("idem")
@@ -162,7 +162,7 @@ func TestIntegration_ConcurrentTransfersNoDoubleSpend(t *testing.T) {
 	ctx := context.Background()
 
 	source := uniqueID("wallet")
-	_, err := walletSvc.CreateWallet(ctx, source, 1000, "USD")
+	_, err := walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: source, Balance: 1000, Currency: "USD"})
 	require.NoError(t, err)
 
 	const n = 15
@@ -171,7 +171,7 @@ func TestIntegration_ConcurrentTransfersNoDoubleSpend(t *testing.T) {
 	destinations := make([]string, n)
 	for i := range destinations {
 		destinations[i] = uniqueID("wallet")
-		_, err := walletSvc.CreateWallet(ctx, destinations[i], 0, "USD")
+		_, err := walletSvc.CreateWallet(ctx, service.CreateWalletInput{ID: destinations[i], Balance: 0, Currency: "USD"})
 		require.NoError(t, err)
 	}
 

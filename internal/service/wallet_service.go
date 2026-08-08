@@ -19,11 +19,12 @@ func NewWalletService(wallets repository.WalletRepository, ledger repository.Led
 	return &WalletService{wallets: wallets, ledger: ledger}
 }
 
-func (s *WalletService) CreateWallet(ctx context.Context, id string, openingBalance int64, currency string) (*WalletResult, error) {
+func (s *WalletService) CreateWallet(ctx context.Context, in CreateWalletInput) (*WalletResult, error) {
+	currency := in.Currency
 	if currency == "" {
 		currency = "USD"
 	}
-	w := &domain.Wallet{ID: id, Balance: openingBalance, Currency: currency}
+	w := &domain.Wallet{ID: in.ID, Balance: in.Balance, Currency: currency}
 	if err := s.wallets.Create(ctx, w); err != nil {
 		return nil, err
 	}

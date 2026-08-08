@@ -44,6 +44,12 @@ func transferResult(t *domain.Transfer, replayed bool) *TransferResult {
 	}
 }
 
+type CreateWalletInput struct {
+	ID       string
+	Balance  int64
+	Currency string
+}
+
 type WalletResult struct {
 	ID        string
 	Balance   int64

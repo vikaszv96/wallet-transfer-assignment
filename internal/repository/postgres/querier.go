@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/robustrade/wallet-transfer-assignment/internal/domain"
 )
 
 // querier is the subset of pgx.Tx / pgxpool.Pool that repositories need.
@@ -58,8 +60,22 @@ func (m *TxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) e
 		return err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+	// Deliberately not using ctx here either: fn already succeeded, so this
+	// commit represents work that should be finalized regardless of whether
+	// the caller's context is subsequently cancelled/times out. Using ctx
+	// would let an unrelated cancellation abort the commit and surface as an
+	// ambiguous failure (see ErrCommitOutcomeUnknown below) far more often
+	// than genuine network/DB errors would.
+	commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tx.Commit(commitCtx); err != nil {
+		// The COMMIT may have reached and been applied by the server even
+		// though this client-side call errored (e.g. the ack was lost) --
+		// unlike Rollback, there is no safe way to tell "definitely not
+		// applied" apart from "applied, but we didn't hear back" here.
+		// Wrap with ErrCommitOutcomeUnknown so callers (idempotency release
+		// logic in particular) know not to treat this as a no-op.
+		return fmt.Errorf("commit tx: %w: %w", domain.ErrCommitOutcomeUnknown, err)
 	}
 	return nil
 }

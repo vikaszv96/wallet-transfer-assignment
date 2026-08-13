@@ -15,4 +15,10 @@ var (
 	ErrTransferNotFound          = errors.New("transfer not found")
 	ErrInvalidTransition         = errors.New("invalid transfer state transition")
 	ErrIdempotencyRecordNotFound = errors.New("idempotency record not found")
+	// ErrCommitOutcomeUnknown means a transaction's COMMIT was sent but its
+	// result could not be confirmed (e.g. the connection dropped waiting for
+	// the acknowledgement). The transaction may have actually landed on the
+	// server despite the client-side error, so callers must not treat this
+	// the same as a definite rollback/no-op.
+	ErrCommitOutcomeUnknown = errors.New("transaction commit outcome unknown")
 )

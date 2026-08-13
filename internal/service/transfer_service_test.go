@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -194,6 +196,44 @@ func TestCreateTransfer_ValidationErrors(t *testing.T) {
 		IdempotencyKey: "k2", FromWalletID: "wallet_1", ToWalletID: "wallet_1", Amount: 10,
 	})
 	assert.ErrorIs(t, err, domain.ErrSameWallet)
+
+	_, err = svc.CreateTransfer(ctx, CreateTransferInput{
+		IdempotencyKey: "", FromWalletID: "wallet_1", ToWalletID: "wallet_2", Amount: 10,
+	})
+	assert.ErrorIs(t, err, domain.ErrMissingIdempotencyKey)
+}
+
+// TestCreateTransfer_AmbiguousCommitDoesNotReleaseKey covers the case where
+// the DB transaction's commit itself fails in a way that doesn't prove
+// whether it landed (domain.ErrCommitOutcomeUnknown). Releasing the
+// idempotency key here would be unsafe: if the commit actually succeeded on
+// the server, a released key lets a retry re-run the transfer and move money
+// twice, so CreateTransfer must not call Release for this error.
+//
+// The fake TxManager runs fn to completion against in-memory maps with no
+// real rollback semantics, so it can't reproduce "commit failed and nothing
+// landed" -- that atomicity guarantee is proven separately against real
+// Postgres in the integration tests. What's tested here, at the service
+// layer, is the specific decision CreateTransfer makes on this error: leave
+// the key alone rather than releasing it.
+func TestCreateTransfer_AmbiguousCommitDoesNotReleaseKey(t *testing.T) {
+	ctx := context.Background()
+	wallets := newFakeWalletRepo(
+		&domain.Wallet{ID: "wallet_1", Balance: 500, Currency: "USD"},
+		&domain.Wallet{ID: "wallet_2", Balance: 200, Currency: "USD"},
+	)
+	idem := newFakeIdempotencyRepo()
+	commitErr := fmt.Errorf("commit tx: %w: %w", domain.ErrCommitOutcomeUnknown, errors.New("connection reset"))
+	svc := NewTransferService(
+		fakeTxManager{commitErr: commitErr},
+		wallets, newFakeTransferRepo(), newFakeLedgerRepo(), idem,
+	)
+
+	in := CreateTransferInput{IdempotencyKey: "ambiguous-key", FromWalletID: "wallet_1", ToWalletID: "wallet_2", Amount: 100}
+
+	_, err := svc.CreateTransfer(ctx, in)
+	require.ErrorIs(t, err, domain.ErrCommitOutcomeUnknown)
+	assert.Zero(t, idem.releaseCalls, "an ambiguous commit outcome must not release the idempotency key")
 }
 
 // TestCreateTransfer_ConcurrentDuplicates fires the same idempotency key from

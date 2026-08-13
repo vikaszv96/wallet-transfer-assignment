@@ -107,6 +107,17 @@ Flow:
    released (`DELETE ... WHERE status='PENDING'`) instead of completed,
    freeing the key for a future retry rather than wedging it on a response
    that was never durably recorded.
+5. **Commit outcome is not always knowable.** If the final `COMMIT` itself
+   fails (e.g. the connection drops after the command is sent but before the
+   acknowledgement comes back), the transaction may have actually landed on
+   the server even though the client saw an error — unlike a failed statement
+   earlier in the transaction, this case can't be treated as "definitely
+   nothing was written." `WithinTx` wraps this specific failure in
+   `domain.ErrCommitOutcomeUnknown`, and `CreateTransfer` checks for it
+   explicitly: on any other error the key is released for retry as described
+   above, but on this one it is deliberately left `PENDING` rather than
+   released, so a retry gets `409` instead of risking a second transfer
+   stacked on top of a commit that already succeeded.
 
 **Deliberately not implemented: automatic lease-based reclaim of a stuck
 `PENDING` key.** The tempting alternative is "if a `PENDING` record is older
@@ -178,6 +189,8 @@ enforced in the domain layer.
 | Duplicate request (same key, network retry) | Replayed from `idempotency_records`, no duplicate side effects |
 | Same key, concurrent in-flight duplicate | `409`, second caller retries |
 | Crash after claiming idempotency key, before finishing | Key stays `PENDING`; `409` on any retry until manually resolved — see §4's note on why auto-reclaim was deliberately not implemented |
+| Commit ack lost (connection drops right after `COMMIT`, outcome unknown) | `domain.ErrCommitOutcomeUnknown`; key left `PENDING` rather than released — see §4 point 5 |
+| Caller's request context cancelled/times out after the transfer logic succeeded but before commit | Commit runs on its own short-lived context (like rollback already did), so it isn't aborted by a cancellation that has nothing to do with whether the work itself succeeded |
 | Concurrent transfers on same wallet | Row-level locks in deterministic order |
 | Insufficient balance | Transfer recorded as `FAILED`, no ledger rows, balances untouched |
 | Wallet does not exist | `404`, nothing written, idempotency key released for retry |

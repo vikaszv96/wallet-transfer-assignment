@@ -12,10 +12,19 @@ import (
 // intentionally simple: real transactional/locking guarantees are proven
 // separately against a real Postgres in the integration tests.
 
-type fakeTxManager struct{}
+// fakeTxManager runs fn directly (no real transaction). commitErr, when set,
+// simulates an error surfacing from the commit step itself -- i.e. fn
+// succeeded, but WithinTx still failed -- to exercise callers' handling of
+// that case (see domain.ErrCommitOutcomeUnknown).
+type fakeTxManager struct {
+	commitErr error
+}
 
-func (fakeTxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(ctx)
+func (f fakeTxManager) WithinTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if err := fn(ctx); err != nil {
+		return err
+	}
+	return f.commitErr
 }
 
 type fakeWalletRepo struct {
@@ -138,8 +147,9 @@ func (r *fakeLedgerRepo) ListByWallet(ctx context.Context, walletID string) ([]d
 }
 
 type fakeIdempotencyRepo struct {
-	mu      sync.Mutex
-	records map[string]*domain.IdempotencyRecord
+	mu           sync.Mutex
+	records      map[string]*domain.IdempotencyRecord
+	releaseCalls int
 }
 
 func newFakeIdempotencyRepo() *fakeIdempotencyRepo {
@@ -185,6 +195,7 @@ func (r *fakeIdempotencyRepo) Complete(ctx context.Context, key, transferID stri
 func (r *fakeIdempotencyRepo) Release(ctx context.Context, key string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.releaseCalls++
 	if rec, ok := r.records[key]; ok && rec.Status == domain.IdempotencyPending {
 		delete(r.records, key)
 	}

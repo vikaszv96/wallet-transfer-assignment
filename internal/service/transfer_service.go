@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -57,6 +58,17 @@ func (s *TransferService) CreateTransfer(ctx context.Context, in CreateTransferI
 
 	result, err := s.execute(ctx, in)
 	if err != nil {
+		if errors.Is(err, domain.ErrCommitOutcomeUnknown) {
+			// The transfer's commit may have actually landed even though this
+			// call saw an error -- releasing the key here could let a retry
+			// re-run the transfer against a commit that already succeeded,
+			// double-spending. Leave the key PENDING: a retry gets
+			// ErrRequestInProgress instead of silently redoing the work. This
+			// matches the deliberate policy for a stuck PENDING key (see
+			// DESIGN.md's idempotency section) -- surface it rather than risk
+			// a duplicate transfer.
+			return nil, err
+		}
 		// Nothing durable was recorded for this attempt (bad wallet, infra
 		// error, ...) -- free the key rather than wedging it on a response
 		// that was never written.

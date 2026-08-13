@@ -192,6 +192,9 @@ func (s *TransferService) GetTransfer(ctx context.Context, id string) (*Transfer
 }
 
 func validateCreateTransferInput(in CreateTransferInput) error {
+	if in.IdempotencyKey == "" {
+		return domain.ErrMissingIdempotencyKey
+	}
 	if in.Amount <= 0 {
 		return domain.ErrInvalidAmount
 	}
